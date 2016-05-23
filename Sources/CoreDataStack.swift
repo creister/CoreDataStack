@@ -199,8 +199,6 @@ public final class CoreDataStack {
     deinit {
         NSNotificationCenter.defaultCenter().removeObserver(self)
     }
-
-    private let saveBubbleDispatchGroup = dispatch_group_create()
 }
 
 public extension CoreDataStack {
@@ -240,90 +238,6 @@ public extension CoreDataStack {
     public typealias ResetResult = SuccessResult
 }
 
-public extension CoreDataStack {
-    /**
-     This function resets the `NSPersistentStore` connected to the `NSPersistentStoreCoordinator`.
-     For `SQLite` based stacks, this function will also remove the `SQLite` store from disk.
-
-     - parameter callbackQueue: Optional GCD queue that will be used to dispatch your callback closure. Defaults to background queue used to create the stack.
-     - parameter resetCallback: A callback with a `Success` or an `ErrorType` value with the error
-     */
-    public func resetStore(callbackQueue: dispatch_queue_t? = nil, resetCallback: CoreDataStackStoreResetCallback) {
-        let backgroundQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0)
-        let callbackQueue: dispatch_queue_t = callbackQueue ?? backgroundQueue
-        dispatch_group_notify(self.saveBubbleDispatchGroup, backgroundQueue) {
-            switch self.storeType {
-            case .InMemory:
-                do {
-                    guard let store = self.persistentStoreCoordinator.persistentStores.first else {
-                        resetCallback(.Failure(Error.InMemoryStoreMissing))
-                        break
-                    }
-                    try self.persistentStoreCoordinator.performAndWaitOrThrow {
-                        try self.persistentStoreCoordinator.removePersistentStore(store)
-                        try self.persistentStoreCoordinator.addPersistentStoreWithType(NSInMemoryStoreType, configuration: nil, URL: nil, options: nil)
-                    }
-                    dispatch_async(callbackQueue) {
-                        resetCallback(.Success)
-                    }
-                } catch {
-                    dispatch_async(callbackQueue) {
-                        resetCallback(.Failure(error))
-                    }
-                }
-                break
-
-            case .SQLite(let storeURL):
-                let coordinator = self.persistentStoreCoordinator
-                let mom = self.managedObjectModel
-
-                guard let store = coordinator.persistentStoreForURL(storeURL) else {
-                    let error = Error.StoreNotFoundAt(url: storeURL)
-                    resetCallback(.Failure(error))
-                    break
-                }
-
-                do {
-                    if #available(iOS 9, OSX 10.11, *) {
-                        try coordinator.destroyPersistentStoreAtURL(storeURL, withType: NSSQLiteStoreType, options: nil)
-                    } else {
-                        let fm = NSFileManager()
-                        try coordinator.performAndWaitOrThrow {
-                            try coordinator.removePersistentStore(store)
-                            try fm.removeItemAtURL(storeURL)
-
-                            // Remove journal files if present
-                            // Eat the error because different versions of SQLite might have different journal files
-                            let _ = try? fm.removeItemAtURL(storeURL.URLByAppendingPathComponent("-shm"))
-                            let _ = try? fm.removeItemAtURL(storeURL.URLByAppendingPathComponent("-wal"))
-                        }
-                    }
-                } catch let resetError {
-                    dispatch_async(callbackQueue) {
-                        resetCallback(.Failure(resetError))
-                    }
-                    return
-                }
-
-                // Setup a new stack
-                NSPersistentStoreCoordinator.setupSQLiteBackedCoordinator(mom, storeFileURL: storeURL) { result in
-                    switch result {
-                    case .Success (let coordinator):
-                        self.persistentStoreCoordinator = coordinator
-                        dispatch_async(callbackQueue) {
-                            resetCallback(.Success)
-                        }
-
-                    case .Failure (let error):
-                        dispatch_async(callbackQueue) {
-                            resetCallback(.Failure(error))
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 public extension CoreDataStack {
     /**
@@ -429,10 +343,7 @@ private extension CoreDataStack {
         guard let parentContext = notificationMOC.parentContext else {
             return
         }
-
-        dispatch_group_enter(saveBubbleDispatchGroup)
         parentContext.saveContext() { _ in
-            dispatch_group_leave(self.saveBubbleDispatchGroup)
         }
     }
 }
