@@ -436,9 +436,7 @@ private extension CoreDataStack {
             return
         }
 
-        dispatch_group_enter(saveBubbleDispatchGroup)
         parentContext.saveContext() { _ in
-            dispatch_group_leave(self.saveBubbleDispatchGroup)
         }
     }
 }
